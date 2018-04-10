@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 
+
+#define _DEBUG
 #ifndef AL_CHECK
 #ifdef _DEBUG
     #define ALCHECK(func) do{ \
@@ -37,7 +39,7 @@ inline void CheckOpenALError(const char* func, const char* filename, int line)
     ALenum err = alGetError();
     if(err != AL_NO_ERROR)
     {
-        printf("AL ERROR: %08x, (%s) at %s:%i - for %s", err,  GetOpenALErrorString(err), filename, line, func);
+        printf("AL ERROR: %08x, (%s) at %s:%i - for %s\n", err,  GetOpenALErrorString(err), filename, line, func);
     }
 }
 
@@ -180,15 +182,67 @@ void processWav(FILE*f)
 
 }
 
+
+void setListener()
+{
+    alListener3f(AL_POSITION, 0.0f, 0.0f, 0.0f);
+    alListener3f(AL_VELOCITY, 0.0f, 0.0f, 0.0f);
+}
+
+ALuint loadSound()
+{
+    ALuint buffer;
+    alGenBuffers(1, &buffer);
+    alBufferData(buffer, AL_FORMAT_MONO16, wavf.data, wavf.SubChunk2Size, wavf.SampleRate);
+
+    return buffer;
+}
+
+
+ALuint createSource()
+{
+    ALuint sourceid;
+    ALCHECK(alGenSources(1, &sourceid));
+    ALCHECK(alSourcef(sourceid, AL_GAIN, 1));
+    ALCHECK(alSourcef(sourceid, AL_PITCH, 1));
+    ALCHECK(alSource3f(sourceid, AL_POSITION, 0, 0, 0));
+    return sourceid;
+}
+
+void play(ALuint sourceid, ALuint bufferid)
+{
+    ALCHECK(alSourcei(sourceid, AL_BUFFER, bufferid));
+    ALCHECK(alSourcePlay(sourceid));
+}
+
 // implement in use load functionality
 
 int main(int argc, char const *argv[])
 {
-    FILE* f = fopen("bounce.wav", "rw");
+    FILE* f = fopen("bounce.wav", "r");
     assert(f);
     processWav(f);
     printWavInfo(wavf);
 
+
+
+    AlInit(true);
+    ALuint bufferID = loadSound();
+    ALuint sourceID = createSource();
+
+    setListener();
+
+    char c;
+    while(scanf("%c", &c) && c != 'q')
+    {
+        if(c == 'p')
+        {
+            printf("audio play.\n");
+            play(sourceID, bufferID);
+        }
+    }
+
+    alDeleteBuffers(1, &bufferID);
     free(wavf.data);
     wavf.data = nullptr;
     fclose(f);
