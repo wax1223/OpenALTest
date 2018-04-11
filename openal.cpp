@@ -134,7 +134,7 @@ struct WavFile
     int32_t SubChunk2Size;
     char* data;
 
-    int32_t duration;
+    float duration;
 };
 
 
@@ -144,7 +144,7 @@ WavFile wavf;
 
 void printWavInfo(WavFile& wavf)
 { 
-    printf("wavf.ChunkID = %s \nwavf.ChunkSize = %d \nwavf.format = %s \nwavf.SubChunk1ID = %s \nwavf.SubChunk1Size = %d \nwavf.AudioFormat = %d \nwavf.NumChannels = %d \nwavf.SampleRate = %d \nwavf.ByteRate = %d \nwavf.BlockAlign = %d \nwavf.BitsPerSample = %d \nwavf.SubChunk2ID = %s \nwavf.SubChunk2Size = %d \n"
+    printf("wavf.ChunkID = %s \nwavf.ChunkSize = %d \nwavf.format = %s \nwavf.SubChunk1ID = %s \nwavf.SubChunk1Size = %d \nwavf.AudioFormat = %d \nwavf.NumChannels = %d \nwavf.SampleRate = %d \nwavf.ByteRate = %d \nwavf.BlockAlign = %d \nwavf.BitsPerSample = %d \nwavf.SubChunk2ID = %s \nwavf.SubChunk2Size = %d \nwavf.duration = %f \n"
         ,wavf.ChunkID 
         ,wavf.ChunkSize 
         ,wavf.format 
@@ -158,6 +158,7 @@ void printWavInfo(WavFile& wavf)
         ,wavf.BitsPerSample 
         ,wavf.SubChunk2ID 
         ,wavf.SubChunk2Size
+        ,wavf.duration
         );
 }
 
@@ -179,7 +180,7 @@ void processWav(FILE*f)
 
     wavf.data = (char*)malloc(sizeof(char) * wavf.SubChunk2Size);
     fread(wavf.data, sizeof(char), wavf.SubChunk2Size, f);
-
+    wavf.duration = wavf.SubChunk2Size / wavf.ByteRate;
 }
 
 
@@ -193,8 +194,8 @@ ALuint loadSound()
 {
     ALuint buffer;
     alGenBuffers(1, &buffer);
-    alBufferData(buffer, AL_FORMAT_MONO16, wavf.data, wavf.SubChunk2Size, wavf.SampleRate);
-
+    // alBufferData(buffer, AL_FORMAT_MONO16, wavf.data, wavf.SubChunk2Size, wavf.SampleRate);
+    alBufferData(buffer, AL_FORMAT_STEREO16, wavf.data, wavf.SubChunk2Size, wavf.SampleRate);
     return buffer;
 }
 
@@ -203,8 +204,9 @@ ALuint createSource()
 {
     ALuint sourceid;
     ALCHECK(alGenSources(1, &sourceid));
-    ALCHECK(alSourcef(sourceid, AL_GAIN, 1));
+    ALCHECK(alSourcef(sourceid, AL_GAIN, 2));
     ALCHECK(alSourcef(sourceid, AL_PITCH, 1));
+    ALCHECK(alSourcei(sourceid, AL_LOOPING, AL_FALSE));
     ALCHECK(alSource3f(sourceid, AL_POSITION, 0, 0, 0));
     return sourceid;
 }
@@ -215,7 +217,23 @@ void play(ALuint sourceid, ALuint bufferid)
     ALCHECK(alSourcePlay(sourceid));
 }
 
+
+bool isPlaying(ALuint sid)
+{
+    ALint sourceState;
+    alGetSourcei(sid, AL_SOURCE_STATE, &sourceState);
+    return (AL_PLAYING == sourceState);
+}
+
+float getProgress(ALuint sid)
+{
+    ALfloat p;
+    alGetSourcef(sid, AL_BYTE_OFFSET, &p);
+    return p;
+}
+
 // implement in use load functionality
+
 
 int main(int argc, char const *argv[])
 {
@@ -223,7 +241,6 @@ int main(int argc, char const *argv[])
     assert(f);
     processWav(f);
     printWavInfo(wavf);
-
 
 
     AlInit(true);
@@ -235,16 +252,22 @@ int main(int argc, char const *argv[])
     char c;
     while(scanf("%c", &c) && c != 'q')
     {
-        if(c == 'p')
+
+        if(c == 'p' && !isPlaying(sourceID))
         {
             printf("audio play.\n");
             play(sourceID, bufferID);
+        }else
+        {
+            printf("current progress: %f/%2.2f", getProgress(sourceID) / wavf.ByteRate, wavf.duration);
         }
-    }
 
+    }
     alDeleteBuffers(1, &bufferID);
+
     free(wavf.data);
     wavf.data = nullptr;
     fclose(f);
+
     return 0;
 }
