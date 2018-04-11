@@ -5,7 +5,11 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
-
+#include <vector>
+#include <cmath>
+#include <chrono>
+#include <thread>
+using namespace std;
 
 #define _DEBUG
 #ifndef AL_CHECK
@@ -19,6 +23,8 @@
 #endif
 #endif
 
+
+#define LoadMaxBit    (44100 * 2 * 16)
 
 const char * GetOpenALErrorString(int errID)
 {   
@@ -103,6 +109,13 @@ public:
             printf("AL_EXTENSIONS:\n%s\n", alStr);
         }
     }
+
+    ~AL()
+    {
+        alcMakeContextCurrent(NULL);
+        alcDestroyContext(alcContext);
+        alcCloseDevice(alcDevice);
+    }
 private:
     ALCdevice* alcDevice;
     ALCcontext* alcContext;
@@ -152,15 +165,40 @@ public:
         return bufferid;
     }
 
-    bool IsStopped()
+    ALint GetSourceState()
     {
         ALint sourceState;
         alGetSourcei(sid, AL_SOURCE_STATE, &sourceState);
-        return (AL_STOPPED == sourceState);
+        return sourceState;
+    } 
+
+    bool IsPaused()
+    {
+        return (AL_PAUSED == GetSourceState());
     }
-    void Play(ALuint bufferid)
+    bool IsStopped()
+    {
+        return (AL_STOPPED == GetSourceState());
+    }
+ 
+    bool IsPlaying()
+    {
+        return (AL_PLAYING == GetSourceState());
+    }
+    bool IsAtBeginning()
+    {
+        return (AL_INITIAL  == GetSourceState());
+    }
+    void SetBuffer(ALuint bufferid)
     {
         ALCHECK(alSourcei(sid, AL_BUFFER, bufferid));
+    }
+    void SetBuffers(int n, ALuint& bid)
+    {
+        ALCHECK(alSourceQueueBuffers(sid, n, &bid));
+    }
+    void Play()
+    {
         ALCHECK(alSourcePlay(sid));
     }
 
@@ -168,13 +206,12 @@ public:
     {
         alSourceStop(sid);
     }
-
-    bool IsPlaying()
+    void Pause()
     {
-        ALint sourceState;
-        alGetSourcei(sid, AL_SOURCE_STATE, &sourceState);
-        return (AL_PLAYING == sourceState);
+        alSourcePause(sid);
     }
+
+
     float GetProgress()
     {
         ALfloat p;
@@ -182,10 +219,29 @@ public:
         return p;
     }
 
+    int GetBufferCounts()
+    {
+        ALint bf;
+        alGetSourcei(sid, AL_BUFFERS_QUEUED, &bf);
+        return bf;
+    }
+    int GetBufferProcessedCounts()
+    {
+        ALint bf;
+        alGetSourcei(sid, AL_BUFFERS_PROCESSED, &bf);
+        return bf;
+    }
+    void UnQueueBuffers(int n)
+    {
+        ALuint bid;
+        alSourceUnqueueBuffers(sid, n, &bid);
+    }
     ~ALSource()
     {
         alDeleteSources(1, &sid);
     }
+
+    int indicator;
     ALuint sid;
 };
 
@@ -196,9 +252,9 @@ public:
     {
         ALCHECK(alGenBuffers(1, &bid));
     }
-    ALuint loadSound(ALuint audioType, void* data, int size, int samplerate)
+    ALuint loadSound(ALuint audioType, char* data, int size, int samplerate)
     {
-        alBufferData(bid, audioType, data, size, samplerate);
+        ALCHECK(alBufferData(bid, audioType, data, size, samplerate));
         return 0;
     }
     ~ALBuffer()
@@ -207,6 +263,7 @@ public:
     }
     ALuint bid;
 };
+
 
 class ALListener
 {
@@ -229,8 +286,14 @@ public:
 class WavFile
 {
 public:
-    explicit WavFile(FILE* f)
+    WavFile(){}
+    explicit WavFile(const char* filename)
     {
+        Setup(filename);
+    }
+    void Setup(const char* filename)
+    {
+        f = fopen(filename, "r");
         assert(f);
         fread(ChunkID, sizeof(char), 4, f);
         fread(&ChunkSize, sizeof(int32_t), 1, f);
@@ -246,15 +309,62 @@ public:
         fread(&SubChunk2ID, sizeof(char), 4, f);
         fread(&SubChunk2Size, sizeof(int32_t), 1, f);
 
-        data = (char*)malloc(sizeof(char) * SubChunk2Size);
-        fread(data, sizeof(char), SubChunk2Size, f);
+
+        if(ByteRate >= SubChunk2Size) //less than 1 second
+        {
+            isNoMoreData = true;
+            bufferSize = SubChunk2Size;
+        }
+        else
+        {
+            isNoMoreData = false;
+            bufferSize = ByteRate;
+        }
+        data = (char*)malloc(bufferSize * sizeof(char));
+        fread(data, sizeof(char), bufferSize, f);
+        // data = (char*)malloc(SubChunk2Size * sizeof(char));
+        // fread(data, sizeof(char), SubChunk2Size, f);
+
         duration = (float)SubChunk2Size / (float)ByteRate;
+        cursor = bufferSize;
         ChunkID[4] = '\0';
         format[4] = '\0';
         SubChunk1ID[4] = '\0';
         SubChunk2ID[4] = '\0';
     }
-
+    bool ReadMore()
+    {
+        if(cursor >= SubChunk2Size) return false;
+        int leftDataSize = SubChunk2Size - cursor;
+        if(leftDataSize > bufferSize)
+        {
+            fread(data, sizeof(char), bufferSize, f);
+            cursor += bufferSize;
+            assert(cursor < SubChunk2Size);
+        }
+        else
+        {
+            //When leftData's size is less than ByteRate, we have to clear the memory
+            //Otherwise we may hear some starnge sound after the true buffer content is played.
+            
+            //NOTE: the buffer size is not always equal to ByteRate because when the 
+            //wav file's duration is less than 1 seconds, we will allocate the buffer with
+            //data size instead of ByteRate. However we we allocate data size buffer,
+            //the cursor is equal to SubChunk2Size which will never happen here.
+            
+            assert(ByteRate <  SubChunk2Size);
+            std::memset(data, 0x00, bufferSize);
+            fread(data, sizeof(char), leftDataSize, f);
+            isNoMoreData = true;
+            cursor += leftDataSize;
+        }
+        // printf("Total cursor: %d\n", cursor);
+        return true;
+    }
+    void SetPos(int Pos)
+    {
+        cursor = Pos;
+    }
     ~WavFile()
     {
         if(this->data)
@@ -262,6 +372,7 @@ public:
             free(this->data);
             this->data = nullptr;
         }
+        fclose(f);
     }
     void PrintInfo()
     { 
@@ -290,69 +401,179 @@ public:
     int32_t SubChunk2Size;
     char* data;
     float duration;
+
+    FILE* f;
+    int cursor;
+    bool isNoMoreData;
+    int bufferSize;
 };
 
 
-class AudioPlayer
+
+class MusicPlayer
 {
 public:
-    
-int32_t playCursor;
+    MusicPlayer(){}
+    MusicPlayer(const MusicPlayer&) = delete;
+    MusicPlayer(const char* file)
+    {
+        Setup(file);
+    }
+    void Setup(const char* filename)
+    {
+        playCursor = 0;
+        bufferCounts = 4;
+        wavf.Setup(filename);
+        albv.resize(bufferCounts);
+
+        int cursor = 0;
+        int oneTime = ceil(wavf.bufferSize / bufferCounts);
+        for(ALBuffer& b : albv)
+        {
+            int left = (wavf.bufferSize - cursor);
+            int size = min(left, oneTime);
+            b.loadSound(AL_FORMAT_STEREO16, &wavf.data[cursor], size, wavf.SampleRate);
+            als.SetBuffers(1, b.bid);
+            cursor += size;
+        }
+
+        playCursor += wavf.bufferSize;
+
+        current = 0;
+        isNeedMoreData = true;
+        isEnd = false;
+    }
+    bool IsPlaying()
+    {
+        return als.IsPlaying();
+    }
+    void Play()
+    {
+        als.Play();
+    }
+    void Pause()
+    {
+        als.Pause();
+    }
+
+    void FillBuffer()
+    {
+        if(isEnd) return;
+        int fillcount = als.GetBufferProcessedCounts();
+        while(fillcount--)
+        {
+            // assert(fillcount <= 1);
+            als.UnQueueBuffers(1);
+            if(isNeedMoreData)
+            {
+                printf("MoreData\n");
+                if(!wavf.ReadMore())
+                {
+                    isEnd = true;
+                    return;
+                }
+                isNeedMoreData = false;
+            }
+            int oneTime = ceil(wavf.bufferSize / bufferCounts);
+            current = min((wavf.bufferSize - current), oneTime);
+            //Fill Data
+            
+            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &wavf.data[currentBuffer * oneTime], current, wavf.SampleRate);
+            als.SetBuffers(1, albv[currentBuffer].bid);
+            playCursor += current;
+            // printf("oneTime: %d, current:%d, playCursor:%d\n", oneTime, current, playCursor);
+            if(++currentBuffer >= albv.size())
+            {
+                currentBuffer = 0;
+                current = 0;
+                isNeedMoreData = true; // moredata
+            }
+        }
+        printf("current progress: %2.2f/%2.2f\n", GetProgress(), GetDuration());
+
+        // printf("slc current buffer id: %d\n", als.GetBufferID());
+        // printf("slc buffers counts: %d\n", als.GetBufferCounts());
+        // printf("slc processed buffers counts: %d\n", als.GetBufferProcessedCounts());
+    }
+    float GetProgress()
+    {
+        return (float)playCursor / (float)wavf.ByteRate;
+    }
+    float GetDuration()
+    {
+        return wavf.duration;
+    }
+
+    int32_t playCursor; // progress
+    vector<ALBuffer> albv;
+    int currentBuffer;
+    ALSource als;
+    WavFile wavf;
+    int current;
+
+    bool isNeedMoreData;
+    int bufferCounts;
+    bool isEnd;
 };
 
 // implement in use load functionality
 int main(int argc, char const *argv[])
 {
-    FILE* f = fopen("2_.wav", "r");
-    FILE* f2 = fopen("bounce.wav", "r");
-    WavFile wavf(f);
-    WavFile wavf2(f2);
-    fclose(f);
-    fclose(f2);
-
+    WavFile wavf2("bounce.wav");
     AL al;
-    al.PrintInfo();
-    ALBuffer alb, alb2;
-    alb.loadSound(AL_FORMAT_STEREO16, wavf.data, wavf.SubChunk2Size, wavf.SampleRate);
-    alb2.loadSound(AL_FORMAT_MONO16, wavf2.data, wavf2.SubChunk2Size, wavf2.SampleRate);
-    ALSource als, als2;
+    ALBuffer alb;
+    // ALBuffer albv;
+    alb.loadSound(AL_FORMAT_MONO16, wavf2.data, wavf2.SubChunk2Size, wavf2.SampleRate);
+    ALSource als2;
     ALListener alL;
 
-    char c;
-    float volume = 0.1;
-    als.SetVolume(volume);
+
+    als2.SetBuffer(alb.bid);
     als2.SetLooping(true);
-    while(scanf("%c", &c) && c != 'q')
+
+    MusicPlayer als("3.wav");
+    als.Play();
+    while(1)
     {
-
-        if(c == 'p' && !als.IsPlaying())
-        {
-            printf("audio play.\n");
-            als.Play(alb.bid);
-        }
-        else if(c == 'b')
-        {
-            if(als2.IsPlaying())
-            {
-                als2.Stop();
-            }
-            else
-            {
-                als2.Play(alb2.bid);
-            }
-        }
-        else if(c == 'u')
-        {
-            volume += 0.1f;
-            als.SetVolume(volume);
-        }
-        else
-        {
-            printf("current progress: %f/%2.2f", als.GetProgress() / wavf.ByteRate, wavf.duration);
-        }
-
+        this_thread::sleep_for(chrono::milliseconds(100));
+        als.FillBuffer();
+        if(als.isEnd) break;
     }
 
+    char c;
 
+    // chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
+    // while(scanf("%c", &c) && c != 'q')
+    // {
+    //     if(c == 'p')
+    //     {
+    //         if(als.IsPlaying())
+    //         {
+    //             printf("Audio pause.\n");
+    //             als.Pause();
+    //         }
+    //         else
+    //         {
+    //             printf("audio play.\n");
+    //             als.Play();
+    //         }
+    //     }
+    //     else if(c == 'b')
+    //     {
+    //         if(als2.IsPlaying())
+    //         {
+    //             als2.Stop();
+    //         }
+    //         else
+    //         {
+    //             als2.Play();
+    //         }
+    //     }
+    //     else
+    //     {
+    //         als.FillBuffer();
+    //         printf("current progress: %f/%2.2f", als.GetProgress() / als.GetDuration(), als.GetDuration());
+    //     }
+    // }
     return 0;
 }
