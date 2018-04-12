@@ -637,14 +637,16 @@ public:
         albv.resize(bufferCounts);
 
         int cursor = 0;
-        int oneTime = ceil(mp3f.bufferSize / bufferCounts);
+        oneTime = ceil(mp3f.bufferSize / bufferCounts);
         for(ALBuffer& b : albv)
         {
+            char* databuf = (char*)mp3f.pcm;
             int left = (mp3f.bufferSize - cursor);
             int size = min(left, oneTime);
-            b.loadSound(AL_FORMAT_STEREO16, &((char*)mp3f.pcm)[cursor], size, mp3f.SampleRate);
+            b.loadSound(AL_FORMAT_STEREO16, &databuf[cursor], size, mp3f.SampleRate);
             als.SetBuffers(1, b.bid);
             cursor += size;
+
         }
         assert(cursor == mp3f.bufferSize);
         playCursor += mp3f.bufferSize;
@@ -654,6 +656,7 @@ public:
         isEnd = false;
 
         threeTime = 0;
+        currentBuffer = 0;
     }
     bool IsPlaying()
     {
@@ -688,12 +691,12 @@ public:
                 playCursor = mp3f.total_samples;
                 isNeedMoreData = false;
             }
-            int oneTime = ceil(mp3f.bufferSize / bufferCounts);
             current = min((mp3f.bufferSize - current), oneTime);
             //Fill Data
             threeTime += current;
             playCursor += current;
-            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &((char*)mp3f.pcm)[currentBuffer * oneTime], current, mp3f.SampleRate);
+            char * bufdata = (char*)mp3f.pcm;
+            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &bufdata[currentBuffer * oneTime], current, mp3f.SampleRate);
             als.SetBuffers(1, albv[currentBuffer].bid);
             // printf("oneTime: %d, current:%d, playCursor:%d, mp3f.bufferSize:%d\n", oneTime, current, playCursor, mp3f.bufferSize);
             if(++currentBuffer >= albv.size())
@@ -726,6 +729,8 @@ public:
     ALSource als;
     int current;
 
+    int oneTime;
+
     bool isNeedMoreData;
     int bufferCounts;
     bool isEnd;
@@ -750,7 +755,7 @@ int main(int argc, char const *argv[])
     // MusicPlayer als("3.wav");
     // als.Play();
 
-    Mp3Player mp3p("5.mp3");
+    Mp3Player mp3p("4.mp3");
     mp3p.Play();
     while(1)
     {
