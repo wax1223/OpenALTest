@@ -336,11 +336,11 @@ public:
     {
         if(cursor >= SubChunk2Size) return false;
         int leftDataSize = SubChunk2Size - cursor;
-        if(leftDataSize > bufferSize)
+        if(leftDataSize >= bufferSize)
         {
             fread(data, sizeof(char), bufferSize, f);
             cursor += bufferSize;
-            assert(cursor < SubChunk2Size);
+            assert(cursor <= SubChunk2Size);
         }
         else
         {
@@ -422,7 +422,7 @@ public:
     void Setup(const char* filename)
     {
         playCursor = 0;
-        bufferCounts = 4;
+        bufferCounts = 3;
         wavf.Setup(filename);
         albv.resize(bufferCounts);
 
@@ -436,12 +436,14 @@ public:
             als.SetBuffers(1, b.bid);
             cursor += size;
         }
-
+        assert(cursor == wavf.bufferSize);
         playCursor += wavf.bufferSize;
 
         current = 0;
         isNeedMoreData = true;
         isEnd = false;
+
+        threeTime = 0;
     }
     bool IsPlaying()
     {
@@ -462,7 +464,7 @@ public:
         int fillcount = als.GetBufferProcessedCounts();
         while(fillcount--)
         {
-            // assert(fillcount <= 1);
+            assert(fillcount <= 1);
             als.UnQueueBuffers(1);
             if(isNeedMoreData)
             {
@@ -472,21 +474,23 @@ public:
                     isEnd = true;
                     return;
                 }
+                playCursor = wavf.cursor;
                 isNeedMoreData = false;
             }
             int oneTime = ceil(wavf.bufferSize / bufferCounts);
             current = min((wavf.bufferSize - current), oneTime);
             //Fill Data
-            
+            threeTime += current;
             albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &wavf.data[currentBuffer * oneTime], current, wavf.SampleRate);
             als.SetBuffers(1, albv[currentBuffer].bid);
-            playCursor += current;
-            // printf("oneTime: %d, current:%d, playCursor:%d\n", oneTime, current, playCursor);
+            // printf("oneTime: %d, current:%d, playCursor:%d, wavf.bufferSize:%d\n", oneTime, current, playCursor, wavf.bufferSize);
             if(++currentBuffer >= albv.size())
             {
+                assert(threeTime == wavf.bufferSize);
                 currentBuffer = 0;
                 current = 0;
                 isNeedMoreData = true; // moredata
+                threeTime = 0;
             }
         }
         printf("current progress: %2.2f/%2.2f\n", GetProgress(), GetDuration());
@@ -514,6 +518,7 @@ public:
     bool isNeedMoreData;
     int bufferCounts;
     bool isEnd;
+    int threeTime;
 };
 
 // implement in use load functionality
