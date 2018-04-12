@@ -9,6 +9,10 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
+
 using namespace std;
 
 #define _DEBUG
@@ -408,7 +412,13 @@ public:
     int bufferSize;
 };
 
-
+// struct AudioFile
+// {
+//     int frame_bytes;
+//     int channels;
+//     int frequence;
+//     int bitrate;
+// };
 
 class MusicPlayer
 {
@@ -461,10 +471,11 @@ public:
     void FillBuffer()
     {
         if(isEnd) return;
+        if(als.IsStopped()) als.Play();
         int fillcount = als.GetBufferProcessedCounts();
         while(fillcount--)
         {
-            assert(fillcount <= 1);
+            // assert(fillcount <= 1);
             als.UnQueueBuffers(1);
             if(isNeedMoreData)
             {
@@ -521,7 +532,207 @@ public:
     int threeTime;
 };
 
-// implement in use load functionality
+
+
+class Mp3File
+{
+public:
+    Mp3File(){}
+    Mp3File(const char* filename)
+    {
+        Setup(filename);
+    }
+    void Setup(const char* filename)
+    {
+        f = fopen(filename, "rb");
+        assert(f);
+        mp3dec_init(&mp3d);
+
+        filesize = fileSize(f);
+        data = (unsigned char*)malloc(filesize * sizeof(char));
+        fread(data, sizeof(char), filesize, f);
+        memset(&info, 0, sizeof(info));
+        playCursor = 0;
+        leftfilesize = filesize;
+        pcmCursor = 0;
+        bufferSize = MINIMP3_MAX_SAMPLES_PER_FRAME * 40 * 2;
+        GetNextFrame();
+        SampleRate = info.hz;
+        duration = (float)filesize / (4 + ((float)info.frame_bytes / info.hz) * (info.bitrate_kbps * 1000 / 8)) * ((float)info.frame_bytes / info.hz);
+    }
+    bool GetNextFrame()
+    {
+        while(1)
+        {
+            samples = mp3dec_decode_frame(&mp3d, &data[playCursor], leftfilesize, &pcm[pcmCursor], &info);
+            if(samples)
+            { 
+                pcmCursor += samples * info.channels;
+                total_samples += samples * info.channels;
+            }
+            playCursor  += info.frame_bytes;
+            leftfilesize -= info.frame_bytes;
+            // printf("samples=%d, total_samples=%d, hz:%d, bitrate_kbps:%d  frame_bytes:%d playCursor:%d, leftfilesize:%ld \n"
+                // , samples, total_samples, info.hz, info.bitrate_kbps, info.frame_bytes, playCursor, leftfilesize);
+            if(pcmCursor >= MINIMP3_MAX_SAMPLES_PER_FRAME * 40)
+            {
+                pcmCursor = 0;
+                break;
+            }
+            if(!info.frame_bytes) break;
+        }
+        if(info.frame_bytes)  return true;
+            else     return false;
+    }
+    ~Mp3File()
+    {
+        if(data) free(data);
+        data = nullptr;
+        fclose(f);
+    }
+
+
+    mp3dec_t mp3d;
+
+    FILE* f;
+    size_t filesize;
+    size_t leftfilesize;
+    int playCursor;
+    unsigned char* data;
+    mp3dec_frame_info_t info;
+    int samples, total_samples = 0;
+
+    short pcm[MINIMP3_MAX_SAMPLES_PER_FRAME * 40];
+    int  pcmCursor;
+    int bufferSize;
+
+    int SampleRate;
+    float duration;
+};
+
+const char* showTime(float seconds,int num, char* buff)
+{
+    assert(buff);
+    memset(buff, 0x00, num);
+    int minutes = seconds / 60;
+    int sec = seconds - minutes * 60;
+    sprintf(buff, "%02d:%02d", minutes, sec);
+    return buff;
+}
+
+class Mp3Player
+{
+public:
+    Mp3Player(){}
+    Mp3Player(const Mp3Player&) = delete;
+    Mp3Player(const char* file)
+    {
+        Setup(file);
+    }
+    void Setup(const char* filename)
+    {
+        mp3f.Setup(filename);
+
+        bufferCounts = 3;
+        albv.resize(bufferCounts);
+
+        int cursor = 0;
+        int oneTime = ceil(mp3f.bufferSize / bufferCounts);
+        for(ALBuffer& b : albv)
+        {
+            int left = (mp3f.bufferSize - cursor);
+            int size = min(left, oneTime);
+            b.loadSound(AL_FORMAT_STEREO16, &((char*)mp3f.pcm)[cursor], size, mp3f.SampleRate);
+            als.SetBuffers(1, b.bid);
+            cursor += size;
+        }
+        assert(cursor == mp3f.bufferSize);
+        playCursor += mp3f.bufferSize;
+        printf("Fill buffer: %d", cursor);
+        current = 0;
+        isNeedMoreData = true;
+        isEnd = false;
+
+        threeTime = 0;
+    }
+    bool IsPlaying()
+    {
+        return als.IsPlaying();
+    }
+    void Play()
+    {
+        printf("audio play\n");
+        als.Play();
+    }
+    void Pause()
+    {
+        als.Pause();
+    }
+    void FillBuffer()
+    {
+        if(isEnd) return;
+        // if(als.IsStopped()) als.Play();
+        int fillcount = als.GetBufferProcessedCounts();
+        printf("Fill %d buffers\n", fillcount);
+        while(fillcount--)
+        {
+            // assert(fillcount <= 1);
+            als.UnQueueBuffers(1);
+            if(isNeedMoreData)
+            {
+                printf("MoreData\n");
+                if(!mp3f.GetNextFrame())
+                {
+                    isEnd = true;
+                }
+                playCursor = mp3f.total_samples;
+                isNeedMoreData = false;
+            }
+            int oneTime = ceil(mp3f.bufferSize / bufferCounts);
+            current = min((mp3f.bufferSize - current), oneTime);
+            //Fill Data
+            threeTime += current;
+            playCursor += current;
+            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &((char*)mp3f.pcm)[currentBuffer * oneTime], current, mp3f.SampleRate);
+            als.SetBuffers(1, albv[currentBuffer].bid);
+            // printf("oneTime: %d, current:%d, playCursor:%d, mp3f.bufferSize:%d\n", oneTime, current, playCursor, mp3f.bufferSize);
+            if(++currentBuffer >= albv.size())
+            {
+                assert(threeTime == mp3f.bufferSize);
+                currentBuffer = 0;
+                current = 0;
+                isNeedMoreData = true; // moredata
+                threeTime = 0;
+            }
+        }
+        char buf1[32], buf2[32];
+        printf("current progress: %s/%s\n", showTime(GetProgress(), 32, buf1), showTime(GetDuration(), 32, buf2));
+    }
+    float GetProgress()
+    {
+        return playCursor / 88200.0f;
+    }
+    float GetDuration()
+    {
+        return mp3f.duration;
+    }
+
+
+    Mp3File mp3f;
+
+    int32_t playCursor; // progress
+    vector<ALBuffer> albv;
+    int currentBuffer;
+    ALSource als;
+    int current;
+
+    bool isNeedMoreData;
+    int bufferCounts;
+    bool isEnd;
+    int threeTime;
+};
+
+
 int main(int argc, char const *argv[])
 {
     WavFile wavf2("bounce.wav");
@@ -536,48 +747,38 @@ int main(int argc, char const *argv[])
     als2.SetBuffer(alb.bid);
     als2.SetLooping(true);
 
-    MusicPlayer als("3.wav");
-    als.Play();
+    // MusicPlayer als("3.wav");
+    // als.Play();
+
+    Mp3Player mp3p("5.mp3");
+    mp3p.Play();
     while(1)
     {
-        this_thread::sleep_for(chrono::milliseconds(100));
-        als.FillBuffer();
-        if(als.isEnd) break;
+        this_thread::sleep_for(chrono::milliseconds(500));
+        // als.FillBuffer();
+        // if(als.isEnd) break;
+        mp3p.FillBuffer();
+        if(mp3p.isEnd) break;
     }
-
-    char c;
-
-    // chrono::high_resolution_clock::time_point start = chrono::high_resolution_clock::now();
+    // while(1){if(!mp3p.GeTNext()) break;}
+    // char c;
     // while(scanf("%c", &c) && c != 'q')
     // {
     //     if(c == 'p')
     //     {
-    //         if(als.IsPlaying())
-    //         {
-    //             printf("Audio pause.\n");
-    //             als.Pause();
-    //         }
-    //         else
-    //         {
-    //             printf("audio play.\n");
-    //             als.Play();
-    //         }
-    //     }
-    //     else if(c == 'b')
-    //     {
-    //         if(als2.IsPlaying())
-    //         {
-    //             als2.Stop();
-    //         }
-    //         else
-    //         {
-    //             als2.Play();
-    //         }
+    //     //     if(als.IsPlaying())
+    //     //     {
+    //     //         printf("Audio pause.\n");
+    //     //         als.Pause();
+    //     //     }
+    //     //     else
+    //     //     {
+    //     //         printf("audio play.\n");
+    //     //         als.Play();
+    //     //     }
     //     }
     //     else
     //     {
-    //         als.FillBuffer();
-    //         printf("current progress: %f/%2.2f", als.GetProgress() / als.GetDuration(), als.GetDuration());
     //     }
     // }
     return 0;
