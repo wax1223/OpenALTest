@@ -59,6 +59,23 @@ size_t fileSize(FILE* f)
 }
 
 
+// static char *wav_header(int hz, int ch, int bips, int data_bytes)
+// {
+//     static char hdr[44] = "RIFFsizeWAVEfmt \x10\0\0\0\1\0ch_hz_abpsbabsdatasize";
+//     unsigned long nAvgBytesPerSec = bips*ch*hz >> 3;
+//     unsigned int nBlockAlign      = bips*ch >> 3;
+
+//     *(int *  )(void*)(hdr + 0x04) = 44 + data_bytes - 8;   /* File size - 8 */
+//     *(short *)(void*)(hdr + 0x14) = 1;                     /* Integer PCM format */
+//     *(short *)(void*)(hdr + 0x16) = ch;
+//     *(int *  )(void*)(hdr + 0x18) = hz;
+//     *(int *  )(void*)(hdr + 0x1C) = nAvgBytesPerSec;
+//     *(short *)(void*)(hdr + 0x20) = nBlockAlign;
+//     *(short *)(void*)(hdr + 0x22) = bips;
+//     *(int *  )(void*)(hdr + 0x28) = data_bytes;
+//     return hdr;
+// }
+
 class AL
 {
 public:
@@ -362,7 +379,7 @@ public:
             isNoMoreData = true;
             cursor += leftDataSize;
         }
-        // printf("Total cursor: %d\n", cursor);
+        printf("Fill Data --> Total cursor: %d  leftDataSize:%d DataSize:%d\n", cursor, leftDataSize, SubChunk2Size);
         return true;
     }
     void SetPos(int Pos)
@@ -436,6 +453,10 @@ public:
         wavf.Setup(filename);
         albv.resize(bufferCounts);
 
+        counter = 0;
+
+        total = 0;
+
         int cursor = 0;
         int oneTime = ceil(wavf.bufferSize / bufferCounts);
         for(ALBuffer& b : albv)
@@ -445,15 +466,19 @@ public:
             b.loadSound(AL_FORMAT_STEREO16, &wavf.data[cursor], size, wavf.SampleRate);
             als.SetBuffers(1, b.bid);
             cursor += size;
+            
+            playCursor += size; 
+            total += size;
+            printf("Normal Play--> Counter: %d, total:%d\n", counter++, total);
         }
-        assert(cursor == wavf.bufferSize);
-        playCursor += wavf.bufferSize;
 
+        assert(cursor == wavf.bufferSize);
         current = 0;
         isNeedMoreData = true;
         isEnd = false;
 
         threeTime = 0;
+
     }
     bool IsPlaying()
     {
@@ -479,7 +504,7 @@ public:
             als.UnQueueBuffers(1);
             if(isNeedMoreData)
             {
-                printf("MoreData\n");
+                // printf("MoreData\n");
                 if(!wavf.ReadMore())
                 {
                     isEnd = true;
@@ -491,10 +516,13 @@ public:
             int oneTime = ceil(wavf.bufferSize / bufferCounts);
             current = min((wavf.bufferSize - current), oneTime);
             //Fill Data
-            threeTime += current;
-            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &wavf.data[currentBuffer * oneTime], current, wavf.SampleRate);
+            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &wavf.data[threeTime], current, wavf.SampleRate);
             als.SetBuffers(1, albv[currentBuffer].bid);
             // printf("oneTime: %d, current:%d, playCursor:%d, wavf.bufferSize:%d\n", oneTime, current, playCursor, wavf.bufferSize);
+            printf("Normal Play--> Counter: %d, total:%d, current:%d threeTime:%d\n", counter++, total, current, threeTime);
+            threeTime += current;
+            total += current;
+            
             if(++currentBuffer >= albv.size())
             {
                 assert(threeTime == wavf.bufferSize);
@@ -504,7 +532,7 @@ public:
                 threeTime = 0;
             }
         }
-        printf("current progress: %2.2f/%2.2f\n", GetProgress(), GetDuration());
+        // printf("current progress: %2.2f/%2.2f\n", GetProgress(), GetDuration());
 
         // printf("slc current buffer id: %d\n", als.GetBufferID());
         // printf("slc buffers counts: %d\n", als.GetBufferCounts());
@@ -530,6 +558,9 @@ public:
     int bufferCounts;
     bool isEnd;
     int threeTime;
+
+    int counter;
+    int total;
 };
 
 
@@ -544,6 +575,7 @@ public:
     }
     void Setup(const char* filename)
     {
+        //TODO(Wax): Deal with IDv3 tag in the mp3 file if it has one.
         f = fopen(filename, "rb");
         assert(f);
         mp3dec_init(&mp3d);
@@ -646,7 +678,6 @@ public:
             b.loadSound(AL_FORMAT_STEREO16, &databuf[cursor], size, mp3f.SampleRate);
             als.SetBuffers(1, b.bid);
             cursor += size;
-
         }
         assert(cursor == mp3f.bufferSize);
         playCursor += mp3f.bufferSize;
@@ -693,10 +724,10 @@ public:
             }
             current = min((mp3f.bufferSize - current), oneTime);
             //Fill Data
-            threeTime += current;
             playCursor += current;
             char * bufdata = (char*)mp3f.pcm;
-            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &bufdata[currentBuffer * oneTime], current, mp3f.SampleRate);
+            albv[currentBuffer].loadSound(AL_FORMAT_STEREO16, &bufdata[threeTime], current, mp3f.SampleRate);
+            threeTime += current;
             als.SetBuffers(1, albv[currentBuffer].bid);
             // printf("oneTime: %d, current:%d, playCursor:%d, mp3f.bufferSize:%d\n", oneTime, current, playCursor, mp3f.bufferSize);
             if(++currentBuffer >= albv.size())
@@ -738,32 +769,34 @@ public:
 };
 
 
+
+
 int main(int argc, char const *argv[])
 {
-    WavFile wavf2("bounce.wav");
+    // WavFile wavf2("bounce.wav");
     AL al;
-    ALBuffer alb;
+    // ALBuffer alb;
     // ALBuffer albv;
-    alb.loadSound(AL_FORMAT_MONO16, wavf2.data, wavf2.SubChunk2Size, wavf2.SampleRate);
-    ALSource als2;
+    // alb.loadSound(AL_FORMAT_MONO16, wavf2.data, wavf2.SubChunk2Size, wavf2.SampleRate);
+    // ALSource als2;
     ALListener alL;
 
 
-    als2.SetBuffer(alb.bid);
-    als2.SetLooping(true);
+    // als2.SetBuffer(alb.bid);
+    // als2.SetLooping(true);
 
-    // MusicPlayer als("3.wav");
-    // als.Play();
+    MusicPlayer als("3.wav");
+    als.Play();
 
-    Mp3Player mp3p("4.mp3");
-    mp3p.Play();
+    // Mp3Player mp3p("4.mp3");
+    // mp3p.Play();
     while(1)
     {
-        this_thread::sleep_for(chrono::milliseconds(500));
-        // als.FillBuffer();
-        // if(als.isEnd) break;
-        mp3p.FillBuffer();
-        if(mp3p.isEnd) break;
+        this_thread::sleep_for(chrono::milliseconds(100));
+        als.FillBuffer();
+        if(als.isEnd) break;
+        // mp3p.FillBuffer();
+        // if(mp3p.isEnd) break;
     }
     // while(1){if(!mp3p.GeTNext()) break;}
     // char c;
